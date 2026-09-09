@@ -154,7 +154,7 @@
     <i class="material-icons">schedule</i>
     <div class="title">Heures supp & récup</div>
     <div class="chip small">Firebase · GitHub Pages</div>
-    <div class="chip small grey lighten-2" style="color:#555;">v1.2.0</div>
+    <div class="chip small grey lighten-2" style="color:#555;">v1.3.0</div>
     <div class="brand-right">
       <span class="user-name" id="userName"></span>
       <img id="userAvatar" class="user-avatar" src="" alt="" style="display:none;">
@@ -240,16 +240,16 @@
 
       <div id="subOvertime" class="sub-tab-panel">
         <div id="logOvertime" class="log-list">Chargement…</div>
-        <div class="export-bar">
-          <div class="input-field"><input id="pdfYear" type="number" min="1900" max="3000"><label class="active" for="pdfYear">Année (optionnel)</label></div>
-          <button class="btn" onclick="exportPdf()">Exporter PDF</button>
-        </div>
-        <div id="pdfResult" class="export-link" style="margin-top:8px;"></div>
       </div>
 
       <div id="subRecup" class="sub-tab-panel" style="display:none;">
         <div id="logRecup" class="log-list">Chargement…</div>
       </div>
+      <div class="export-bar">
+        <div class="input-field"><input id="pdfYear" type="number" min="1900" max="3000"><label class="active" for="pdfYear">Année (optionnel)</label></div>
+        <button class="btn" onclick="exportPdf()">Exporter heures supp + récup</button>
+      </div>
+      <div id="pdfResult" class="export-link" style="margin-top:8px;"></div>
     </div>
   </div>
 </div>
@@ -588,25 +588,50 @@ async function submitRecup(){
   catch(e){toast(e.message||String(e),'red lighten-2');}
 }
 
-function fmtHM(v){v=Number(v);if(!isFinite(v))return'';const t=Math.round(v*60),h=Math.floor(t/60),m=t%60;return m===0?`${h}h`:`${h}h${String(m).padStart(2,'0')}`;}
+function fmtHM(v){v=Number(v);if(!isFinite(v))return'';const t=Math.round(v*60),sign=t<0?'-':'',abs=Math.abs(t),h=Math.floor(abs/60),m=abs%60;return m===0?`${sign}${h}h`:`${sign}${h}h${String(m).padStart(2,'0')}`;}
+function preparePdfData(overtimeRows,recupRows,year){
+  const rowYear=r=>Number(r.annee||String(r.date||'').slice(0,4));
+  const overtime=(overtimeRows||[]).filter(r=>!year||rowYear(r)===year).sort((a,b)=>(String(a.date||'')+String(a.debut||'')).localeCompare(String(b.date||'')+String(b.debut||'')));
+  const recups=(recupRows||[]).filter(r=>!year||rowYear(r)===year).sort((a,b)=>String(a.date||'').localeCompare(String(b.date||'')));
+  const totalReal=overtime.reduce((sum,r)=>sum+(Number(r.dureeReelle)||0),0);
+  const totalCounted=overtime.reduce((sum,r)=>sum+(Number(r.dureeComptabilisee)||0),0);
+  const totalRecup=recups.reduce((sum,r)=>sum+(Number(r.heures)||0),0);
+  return{overtime,recups,totalReal,totalCounted,totalRecup,balance:totalCounted-totalRecup};
+}
+function buildPdfDocument(overtimeRows,recupRows,year,generatedAt=new Date()){
+  const data=preparePdfData(overtimeRows,recupRows,year);
+  const{jsPDF}=window.jspdf,doc=new jsPDF({orientation:'portrait',unit:'mm',format:'a4'});
+  const pageWidth=doc.internal.pageSize.getWidth(),pageHeight=doc.internal.pageSize.getHeight();
+  const coral=[239,83,91],dark=[31,41,55],muted=[85,85,85],light=[243,244,246];
+  doc.setFontSize(18);doc.setFont(undefined,'bold');doc.setTextColor(...dark);doc.text("Heures supplémentaires et récupérations",14,20);
+  doc.setFontSize(12);doc.text(year?`Année : ${year}`:'Toutes années',14,29);
+  doc.setFontSize(9);doc.setFont(undefined,'normal');doc.setTextColor(...muted);
+  doc.text(`Anthony Lemoine · Généré le ${String(generatedAt.getDate()).padStart(2,'0')}/${String(generatedAt.getMonth()+1).padStart(2,'0')}/${generatedAt.getFullYear()} à ${String(generatedAt.getHours()).padStart(2,'0')}:${String(generatedAt.getMinutes()).padStart(2,'0')}`,14,36);
+  doc.setFillColor(...light);doc.roundedRect(14,42,pageWidth-28,25,2,2,'F');
+  const summary=[['Heures supp réelles',fmtHM(data.totalReal)],['Heures comptabilisées',fmtHM(data.totalCounted)],['Récup prises',fmtHM(data.totalRecup)],['Solde',fmtHM(data.balance)]];
+  const colWidth=(pageWidth-32)/4;
+  summary.forEach((item,i)=>{const x=16+i*colWidth;doc.setFontSize(7.5);doc.setFont(undefined,'normal');doc.setTextColor(...muted);doc.text(item[0],x,50,{maxWidth:colWidth-3});doc.setFontSize(13);doc.setFont(undefined,'bold');doc.setTextColor(...(i===3?coral:dark));doc.text(item[1],x,61);});
+  function fmtHoraire(t){if(!t)return'';const[h,m]=String(t).split(':');return m==='00'?`${h}h`:`${h}h${m}`;}
+  function sectionTitle(title,startY){if(startY>pageHeight-32){doc.addPage();startY=18;}doc.setFontSize(12);doc.setFont(undefined,'bold');doc.setTextColor(...coral);doc.text(title,14,startY);return startY+4;}
+  let startY=sectionTitle('Heures supplémentaires',77);
+  const overtimeBody=data.overtime.length?data.overtime.map(r=>[fmtDateFR(r.date),`${fmtHoraire(r.debut)} à ${fmtHoraire(r.fin)}`,fmtHM(r.dureeReelle),fmtHM(r.dureeComptabilisee),String(r.commentaire||'')]):[['Aucune heure supplémentaire.','','','','']];
+  doc.autoTable({startY,head:[['Date','Horaires','Durée réelle','Durée compt.','Commentaire']],body:overtimeBody,theme:'grid',headStyles:{fillColor:dark,textColor:255,fontStyle:'bold',halign:'center',fontSize:8},columnStyles:{0:{cellWidth:31,halign:'left'},1:{cellWidth:32,halign:'center'},2:{cellWidth:25,halign:'center'},3:{cellWidth:29,halign:'center'},4:{cellWidth:'auto',halign:'left'}},alternateRowStyles:{fillColor:light},margin:{left:14,right:14,bottom:14},styles:{fontSize:8.5,overflow:'linebreak',cellPadding:3,lineColor:[209,213,219],valign:'middle'}});
+  startY=sectionTitle('Récupérations prises',(doc.lastAutoTable&&doc.lastAutoTable.finalY||startY)+12);
+  const recupBody=data.recups.length?data.recups.map(r=>[fmtDateFR(r.date),fmtHM(r.heures),String(r.commentaire||'')]):[['Aucune récupération.','','']];
+  doc.autoTable({startY,head:[['Date','Durée récupérée','Commentaire']],body:recupBody,theme:'grid',headStyles:{fillColor:dark,textColor:255,fontStyle:'bold',halign:'center',fontSize:8},columnStyles:{0:{cellWidth:40,halign:'left'},1:{cellWidth:38,halign:'center'},2:{cellWidth:'auto',halign:'left'}},alternateRowStyles:{fillColor:light},margin:{left:14,right:14,bottom:14},styles:{fontSize:8.5,overflow:'linebreak',cellPadding:3,lineColor:[209,213,219],valign:'middle'}});
+  const pc=doc.internal.getNumberOfPages();for(let i=1;i<=pc;i++){doc.setPage(i);doc.setFontSize(8);doc.setFont(undefined,'normal');doc.setTextColor(100);doc.text(`Page ${i} / ${pc}`,pageWidth-14,pageHeight-6,{align:'right'});}
+  return doc;
+}
 async function exportPdf(){
   if(!db||!currentUser){toast('Non connecté.','red lighten-2');return;}
   const yv=document.getElementById('pdfYear').value,year=yv?Number(yv):null;
-  document.getElementById('pdfResult').innerHTML='';toast('Génération du PDF…','');
+  document.getElementById('pdfResult').innerHTML='';toast('Génération du PDF heures supp + récup…','');
   try{
-    const snap=await db.collection('heuressupp').where('uid','==',uid()).get();
-    let rows=[];snap.forEach(d=>rows.push(d.data()));rows.sort((a,b)=>(a.date+a.debut)>(b.date+b.debut)?1:-1);if(year)rows=rows.filter(r=>Number(r.annee)===year);
-    const{jsPDF}=window.jspdf,doc=new jsPDF({orientation:'portrait',unit:'mm',format:'a4'});
-    doc.setFontSize(18);doc.setFont(undefined,'bold');doc.text("Heures supplémentaires d'Anthony Lemoine",14,20);
-    doc.setFontSize(12);doc.setFont(undefined,'bold');doc.text(year?`Année : ${year}`:'Toutes années',14,29);
-    doc.setFontSize(10);doc.setFont(undefined,'normal');doc.setTextColor(85,85,85);
-    const n=new Date();doc.text(`Généré le ${String(n.getDate()).padStart(2,'0')}/${String(n.getMonth()+1).padStart(2,'0')}/${n.getFullYear()} ${String(n.getHours()).padStart(2,'0')}:${String(n.getMinutes()).padStart(2,'0')}`,14,36);doc.setTextColor(0,0,0);
-    function fmtHoraire(t){if(!t)return'';const[h,m]=t.split(':');return m==='00'?`${h}h`:`${h}h${m}`;}
-    const tr=rows.length>0?rows.map(r=>[fmtDateFR(r.date),fmtHoraire(r.debut)+' > '+fmtHoraire(r.fin),fmtHM(r.dureeReelle),fmtHM(r.dureeComptabilisee),String(r.commentaire||'')]):[['Aucune donnée.','','','','']];
-    doc.autoTable({startY:46,head:[['Date','Horaires','Durée réelle','Durée compt.','Commentaire']],body:tr,theme:'grid',headStyles:{fillColor:[31,41,55],textColor:255,fontStyle:'bold',halign:'center',fontSize:9},columnStyles:{0:{cellWidth:55,halign:'left',fontSize:9},1:{cellWidth:28,halign:'center',fontSize:9},2:{cellWidth:22,halign:'center',fontSize:9},3:{cellWidth:26,halign:'center',fontSize:9},4:{cellWidth:'auto',halign:'left',fontSize:9}},alternateRowStyles:{fillColor:[243,244,246]},margin:{left:14,right:14},styles:{overflow:'linebreak',cellPadding:4,lineColor:[209,213,219],valign:'middle'}});
-    const pc=doc.internal.getNumberOfPages();for(let i=1;i<=pc;i++){doc.setPage(i);doc.setFontSize(8);doc.setTextColor(100);doc.text(`Page ${i} / ${pc}`,doc.internal.pageSize.getWidth()-20,doc.internal.pageSize.getHeight()-6);}
+    const[overtimeSnap,recupSnap]=await Promise.all([db.collection('heuressupp').where('uid','==',uid()).get(),db.collection('recups').where('uid','==',uid()).get()]);
+    const overtimeRows=[],recupRows=[];overtimeSnap.forEach(d=>overtimeRows.push(d.data()));recupSnap.forEach(d=>recupRows.push(d.data()));
+    const n=new Date(),doc=buildPdfDocument(overtimeRows,recupRows,year,n);
     const ts=n.getFullYear()+String(n.getMonth()+1).padStart(2,'0')+String(n.getDate()).padStart(2,'0')+'_'+String(n.getHours()).padStart(2,'0')+String(n.getMinutes()).padStart(2,'0');
-    const fn=`Anthony_Lemoine_HeuresSupp_${ts}.pdf`;doc.save(fn);
+    const fn=`Anthony_Lemoine_HeuresSupp_Recup_${year||'toutes_annees'}_${ts}.pdf`;doc.save(fn);
     document.getElementById('pdfResult').innerHTML=`<span style="color:#16a34a;">✓ PDF téléchargé : ${esc(fn)}</span>`;toast('PDF prêt.','green lighten-1');
   }catch(e){toast(e.message||String(e),'red lighten-2');}
 }
